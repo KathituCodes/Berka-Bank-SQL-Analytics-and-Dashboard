@@ -116,7 +116,7 @@ def load_data():
         read("query1_balance_vs_default.csv"),
         read("query2_velocity_drop.csv"),
         read("query3_cashout_risk_50%.csv"),
-        read("query4_cashout_risk_80%.csv"),
+        read("query3_cashout_risk_80%.csv"),
     )
 
 q1, q2, q3, q4 = load_data()
