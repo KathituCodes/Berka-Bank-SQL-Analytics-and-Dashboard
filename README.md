@@ -1,133 +1,116 @@
-# Berka Bank SQL Analytics and Dashboard
+# Berka Bank: Spotting Risky Loans with SQL
 
-## Live Dashboard
+Using SQL on **1,056,320 real bank transactions**, I built three early-warning signals for loan default and shipped them as a live, interactive dashboard. The strongest signal: **borrowers in the lowest 20% by average balance defaulted at 37.50%, about 13 times the 2.85% rate of the highest 20%.**
 
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://sql-analytics-with-app-dashboard-on-the-berka-bank-dataset-vwb.streamlit.app/)
 
-**[View the live dashboard here](https://sql-analytics-with-app-dashboard-on-the-berka-bank-dataset-vwb.streamlit.app/)**
+**[View the live dashboard](https://sql-analytics-with-app-dashboard-on-the-berka-bank-dataset-vwb.streamlit.app/)**
 
----
-
-## Summary
-
-Banks lend money, and some borrowers do not pay it back. The hard part is spotting the risky borrowers early. This project uses real records from a Czech bank (1993 to 1998), covering over one million transactions, to test three simple ideas for spotting risk:
-
-1. Do customers who usually keep more money in their account fail to repay loans less often?
-2. Does a sudden drop in account activity warn that a borrower is in trouble?
-3. Can we spot a borrower pulling out their money just before they stop repaying?
-
-I answered these by writing questions (called queries) in a database language called SQL. I then turned the results into an interactive dashboard that anyone can open in a web browser.
-
----
-
-## Words Used in This Project
-
-| Term | What it means |
+| At a glance | |
 |---|---|
-| Query | A question written in SQL and asked of a database. The database replies with a table of results. |
-| Default | When a borrower does not repay a loan as agreed. |
-| Default rate | The share of loans that go bad. If 10 out of 100 loans go bad, the default rate is 10%. |
-| Average balance | The typical amount of money sitting in an account over time. |
-| Inflow | Money coming into an account, such as salary or deposits. |
-| Threshold | A cut-off number. Anything above it gets flagged for a closer look. |
-| Flag | A warning marker placed on an account so a person can review it. |
+| Data | 8 linked tables from a Czech bank, 1993 to 1998; 682 loans, 76 of them bad (11.1%) |
+| Built | A PostgreSQL database, 3 analytical queries, and a Streamlit + Plotly dashboard |
+| Key techniques | Chained CTEs, `NTILE`, `LAG` and `ROW_NUMBER` window functions |
+| Performance fix | One query cut from more than an hour to under 5 seconds |
 
 ---
 
-## The Three Questions
+## Situation
 
-| Query | The question in plain words | SQL technique used (for technical readers) |
-|---|---|---|
-| 1 | Do customers with high balances default less on loans? | CTEs + NTILE window function |
-| 2 | Does a drop in account activity signal default risk? | CTEs + LAG window function |
-| 3 | Can we detect money being pulled out before default? | CTEs + ROW_NUMBER window function |
+A Czech bank issued 682 loans, and **76 of them (11.1%) went bad**. The question was whether those borrowers could have been spotted earlier from their everyday account behaviour.
 
----
+The raw data was not ready to query:
 
-## The Data
+- **Eight semicolon-separated files** that had to be modelled and loaded into a relational database in the right order.
+- **A file that wouldn't load:** `district.csv` used `?` for missing values, which PostgreSQL rejects in numeric columns.
+- **Czech labels and coded dates:** transaction types such as `PRIJEM` (money in) and `VYBER` (cash withdrawal), and dates stored as `YYMMDD` codes. A wrong label returns a wrong answer with no error.
+- **Four loan outcomes, not two:** A (repaid, 203), C (running fine, 403), B (ended unpaid, 31) and D (running, client in trouble, 45).
 
-The Berka dataset holds real financial records from a Czech bank. It is made up of eight linked tables, a bit like eight connected spreadsheets that follow a customer from signing up to repaying a loan.
+## Task
 
-| Table | Rows | What it holds |
-|---|---|---|
-| account | 4,500 | Every bank account |
-| client | 5,369 | Every customer |
-| district | 77 | Regional facts such as population and average salary |
-| disp | 5,369 | The link between each customer and their account |
-| loan | 682 | Every loan issued, including how it ended |
-| order | 6,471 | Standing payment instructions, such as monthly rent |
-| trans | 1,056,320 | Every single transaction |
-| card | 892 | Credit cards issued |
+Find out whether account behaviour can flag a risky borrower, using SQL alone, and present the results so a non-technical credit team can explore them. I framed it as one question for each stage at which a lender can act:
 
-**Download:** [Kaggle: The Berka Dataset](https://www.kaggle.com/datasets/marceloventura/the-berka-dataset)
-
----
-
-## Tools Used
-
-| Tool | What I used it for |
+| Stage | Question |
 |---|---|
-| PostgreSQL | The database that stores the data and answers the queries |
-| DBeaver | The program used to write queries and load data into the database |
-| Python (pandas, numpy) in Google Colab | Cleaning a small problem in the raw data |
-| Python, Streamlit, Plotly | Building the interactive dashboard |
-| Git and GitHub | Saving and sharing the project |
+| Before lending | Do customers who keep more money in their account default less? |
+| After lending | Does a sudden drop in account activity signal trouble? |
+| Before the final default | Can we spot borrowers pulling their money out ahead of defaulting? |
+
+## Action
+
+**1. Built the database**
+- Designed eight PostgreSQL tables with primary and foreign keys, and loaded them in dependency order (district first, card last) through DBeaver.
+- Fixed `district.csv` in Python before loading: read `?` as missing (one value each in A12 and A15) and filled them with the column average. This is regional data that the transaction queries don't depend on, so filling beat deleting a district.
+- Verified every table's row count after loading (for example, 1,056,320 transactions and 682 loans).
+
+**2. Understood the data before querying it**
+- Read the dataset's original project description first.
+- Merged the four loan statuses into GOOD (A, C) and BAD (B, D), the binary framing used in credit scoring.
+- Translated and counted the Czech transaction labels so every filter used the right one.
+
+**3. Wrote three queries, one technique each**
+
+| Query | Approach | SQL technique |
+|---|---|---|
+| 1. Balance vs default | Average balance per account, split into five equal groups; compare the bottom and top 20% default rates | Chained CTEs, `NTILE(5)` |
+| 2. Activity drop | Transactions per account per month, set beside the previous month; flag drops over 40% | `LAG()` |
+| 3. Cash-out | Each BAD-loan account's latest transaction vs its average monthly income; flag outflows above a cut-off | `ROW_NUMBER()` |
+
+**4. Solved three problems along the way**
+- **A query that didn't scale.** My first Query 3 looked up each account's latest transaction by re-scanning the table for every row, over a million lookups. It ran for more than an hour. Rewriting it to rank all rows newest first in a single pass with `ROW_NUMBER()` brought it to **under 5 seconds**.
+- **A false alarm.** December 1998 kept topping Query 2's drop list. I traced it to the dataset ending partway through that month, so accounts only looked quiet. In production I would exclude the latest, incomplete month.
+- **A cut-off with no single right answer.** I ran Query 3 at both 80% and 50% of income and reported both, because where the line sits is a business decision.
+
+**5. Shipped a dashboard**
+- Exported each query's results and built an interactive **Streamlit + Plotly** dashboard, so anyone can explore the findings in a browser without SQL.
+
+## Result
+
+| Signal | Finding | How a bank would use it |
+|---|---|---|
+| Average balance | **37.50%** default rate in the lowest 20% vs **2.85%** in the highest 20%: about **13x** | An input to the credit score |
+| Activity drop | Drops of up to **90%** in a month (for example, 18 transactions falling to 3); December 1998 identified as a data artefact | Post-loan monitoring, on completed months only |
+| Cash-out | At 80% no account was flagged. At 50%, **account 10857** was flagged: the largest bad loan (385,560), with a last transfer out worth **73.68%** of its monthly income | A fraud check on top of the credit score, with the cut-off set by the credit team |
+
+The Query 3 result is a precision versus recall trade-off. A strict cut-off flags fewer honest customers but misses real risk; a loose one catches more risk but creates more false alarms.
+
+**Limitations and next steps**
+- **Query 1 uses balances from the whole account history,** including after each loan was issued. A borrower already in default will show a low balance because of it, which could inflate the 13x gap. Next step: use only transactions dated before each loan.
+- **Small groups:** the lowest-balance group has only 40 loans (15 bad), so 37.50% is directional. Comparing all five groups would show whether risk rises steadily with balance.
+- **Queries 2 and 3 are not yet validated against outcomes.** Testing them on GOOD loans too would measure how many honest customers each flag would catch.
 
 ---
 
-## What Is in This Repository
+## Tools
+
+| Tool | Use |
+|---|---|
+| PostgreSQL, DBeaver | Database, table design, data loading, queries |
+| Python (pandas) in Google Colab | Fixing the missing values in the district file |
+| Python, Streamlit, Plotly | Interactive dashboard |
+| Git, GitHub | Version control |
+
+## Repository
 
 ```
-├── berka_dashboard.py               # The dashboard application
-├── requirements.txt                 # List of Python tools the dashboard needs
-├── README.md                        # This file
-├── Querying_the_Berka_Bank_Data.sql # All three SQL queries, with notes
-├── Handling_district_missing_values.ipynb  # Notebook that fixes the missing data
+├── berka_dashboard.py                      # Streamlit dashboard
+├── requirements.txt                        # Python dependencies
+├── Querying_the_Berka_Bank_Data.sql        # The three queries, with notes
+├── Handling_district_missing_values.ipynb  # Fix for the district file
+├── README.md
 └── data/
     ├── query1_balance_vs_default.csv
     ├── query2_velocity_drop.csv
-    ├── query3_cashout_risk_50%.csv
-    └── query4_cashout_risk_80%.csv
+    ├── query3_cashout_risk_50%.csv         # Query 3 at the 50% cut-off
+    └── query4_cashout_risk_80%.csv         # Query 3 at the 80% cut-off
 ```
 
-The four files in the `data` folder are the saved results of the queries. The dashboard reads them to draw its charts. The last two files are the results of Query 3 run with two different cut-offs (50% and 80%).
-
 ---
 
-## What I Found
+## Technical Detail
 
-**Query 1: Customers who keep more money in their account default far less.**
-Accounts in the lowest 20% by average balance defaulted at a rate about 13 times higher than accounts in the highest 20%. This makes average balance a strong candidate for use in a credit scoring model.
-
-**Query 2: A sudden fall in activity can be an early warning.**
-Some accounts dropped 90% in the number of transactions in a single month. Watching for this after a loan is paid out can give a lender time to step in before a payment is missed.
-
-**Query 3: The cut-off you choose decides who gets flagged.**
-At an 80% cut-off, no accounts were flagged. At 50%, one account was flagged as high risk. Choosing the cut-off is a business decision, not a technical one. A strict cut-off misses some real risks. A loose cut-off flags good customers by mistake. Every credit team has to balance the two. In data science this trade-off is called precision versus recall.
-
----
-
-## The Three Questions in More Detail
-
-### Query 1: Do customers with higher balances default less?
-
-**How I answered it**
-
-1. I worked out the average balance of every account across all its transactions.
-2. I ranked all accounts from lowest to highest average balance and split them into five equal groups.
-3. I kept only the lowest 20% and the highest 20%, so the comparison would be clear.
-4. I linked these accounts to the loan records and calculated what share of loans went bad in each group. A loan counts as bad if it ended unpaid or is currently in trouble (statuses B or D).
-
-**Result**
-
-| Group | Default rate |
-|---|---|
-| Lowest 20% by balance | 37.50% |
-| Highest 20% by balance | 2.85% |
-
-That is roughly a 13 times difference, based on one everyday habit.
-
-**The SQL** (for technical readers)
+<details>
+<summary><b>Query 1 SQL: average balance vs default</b></summary>
 
 ```sql
 WITH account_avg_balance AS (
@@ -158,68 +141,27 @@ GROUP BY top_and_bottom.balance_tier
 ORDER BY top_and_bottom.balance_tier;
 ```
 
-### Query 2: Does a sudden drop in activity signal trouble?
+All three queries are in `Querying_the_Berka_Bank_Data.sql`.
+</details>
 
-**How I answered it**
+<details>
+<summary><b>Problems I hit while building the database, and the fixes</b></summary>
 
-1. I counted each account's transactions per month.
-2. For every account and month, I looked back at the previous month's count.
-3. I calculated the percentage change and flagged any drop larger than 40%.
-
-**Result**
-
-Several accounts dropped 80% to 90% in a single month. Results for December 1998 kept appearing, but they are a false alarm. The dataset ends partway through that month, so accounts look quiet only because the records stopped early. In a real setting, I would leave out the most recent month before flagging anyone.
-
-*Technical note: this query uses the LAG() window function to place each account's previous month next to the current month.*
-
-### Query 3: Can we spot money being pulled out before default?
-
-**What I looked for**
-
-Accounts meeting both of these conditions at the same time:
-
-- The account has a bad or troubled loan.
-- The most recent transaction was a large payment out, bigger than a set share (first 80%, then 50%) of the account's average monthly income.
-
-Either condition alone is not a strong warning. Together, they may point to money being moved out on purpose.
-
-**A problem I ran into**
-
-My first version found each account's latest transaction by checking the whole table again for every single row. With over a million rows, that meant over a million separate checks. It ran for more than an hour and I had to cancel it.
-
-I rewrote it so the database ranks each account's transactions from newest to oldest in one pass, then keeps only the newest. This ran in under five seconds. A query that gives the right answer but takes an hour is not ready for real use.
-
-**Result**
-
-At an 80% cut-off, no accounts were flagged. At 50%, account 10857 was flagged as high risk. It has the largest loan among the eight troubled accounts reviewed (385,560), and its last transaction was a transfer to another account worth 73.68% of its average monthly income.
-
-*Technical note: this query uses the ROW_NUMBER() window function to find each account's latest transaction.*
-
----
-
-## Problems I Ran Into and How I Fixed Them
-
-| Problem | What caused it | How I fixed it |
+| Problem | Cause | Fix |
 |---|---|---|
-| The district file would not load | Missing values were written as question marks instead of being left empty | Replaced the question marks with the column average using Python, before loading |
-| The district table did not match the file | The file's first column is named A1, but my table expected a different name | Recreated the district table using A1, so it matches the file exactly |
-| An error appeared during loading | One or more rows broke the table's rules | Turned off batch loading in DBeaver so rows load one at a time |
-| Query 3 ran for over an hour | It repeated a search once for each of the 1,056,320 rows | Rewrote it to rank all rows in a single pass |
-| December 1998 looked high risk in Query 2 | The dataset ends partway through December 1998, so that month has fewer transactions | Recognised it as a data issue. In real use, I would leave out the most recent month |
+| District file would not load | Missing values written as `?` | Read `?` as missing in pandas and filled with the column average before loading |
+| District table didn't match the file | The file's first column is `A1`; the table expected another name | Recreated the table with columns `A1` to `A16` to match the file |
+| Error during loading | Some rows broke the table's rules | Turned off batch insert in DBeaver (batch size 1), then confirmed row counts |
+| Query 3 ran for over an hour | A correlated lookup repeated for each of 1,056,320 rows | Single-pass ranking with `ROW_NUMBER()` |
+| December 1998 looked high risk | The dataset ends partway through the month | Treated as a data artefact; exclude the latest month in production |
+</details>
 
----
+<details>
+<summary><b>How to run or rebuild the project</b></summary>
 
-## How to Run This Project
+**Option 1: View the results.** Open the [live dashboard](https://sql-analytics-with-app-dashboard-on-the-berka-bank-dataset-vwb.streamlit.app/). Nothing to install.
 
-There are three levels, depending on how much you want to do.
-
-### Option 1: Just look at the results
-
-Open the [live dashboard](https://sql-analytics-with-app-dashboard-on-the-berka-bank-dataset-vwb.streamlit.app/). Nothing to install.
-
-### Option 2: Run the dashboard on your own computer
-
-You need Python 3.8 or higher. You do not need PostgreSQL for this option, because the dashboard reads the saved results in the `data` folder.
+**Option 2: Run the dashboard locally** (Python 3.8+; no database needed, since it reads the CSVs in `data/`):
 
 ```bash
 git clone https://github.com/KathituCodes/your-repo-name.git
@@ -228,207 +170,122 @@ pip install -r requirements.txt
 streamlit run berka_dashboard.py
 ```
 
-### Option 3: Rebuild the database and re-run the queries
+**Option 3: Rebuild the database** (Python 3.8+, PostgreSQL, DBeaver or any PostgreSQL client):
 
-You need Python 3.8 or higher, PostgreSQL, and DBeaver (or any PostgreSQL client). Follow the steps below.
+1. **Download** the eight CSVs from [Kaggle](https://www.kaggle.com/datasets/marceloventura/the-berka-dataset). They are semicolon-separated, dates are `YYMMDD`, and labels are in Czech:
 
----
+   | Czech | English |
+   |---|---|
+   | PRIJEM | Credit (money in) |
+   | VYDAJ | Debit (money out) |
+   | VYBER | Cash withdrawal |
+   | VKLAD | Cash deposit |
+   | PREVOD NA UCET | Transfer to another account |
+   | PREVOD Z UCTU | Transfer from another account |
+   | VYBER KARTOU | Card withdrawal |
 
-## Rebuilding the Database (Technical Steps)
+2. **Clean the district file:**
 
-### Step 1: Download and inspect the raw files
+   ```python
+   import pandas as pd
+   df = pd.read_csv('district.csv', sep=';', na_values=['?'])
+   print(df.isnull().sum())                     # A12 and A15 each have 1 missing value
+   df['A12'] = df['A12'].fillna(df['A12'].mean())
+   df['A15'] = df['A15'].fillna(df['A15'].mean())
+   df.to_csv('district_clean.csv', sep=';', index=False)
+   ```
 
-Download the eight CSV files from Kaggle. Three things to know about them:
+   Import `district_clean.csv`, not the original.
 
-- They use a **semicolon (`;`)** to separate values, not a comma.
-- Dates are stored as `YYMMDD` codes (for example, 980315), not as normal dates.
-- The text is in Czech. Key terms are translated below.
+3. **Create the tables:**
 
-| Czech term | English meaning |
-|---|---|
-| PRIJEM | Credit (money coming in) |
-| VYDAJ | Debit (money going out) |
-| VYBER | Cash withdrawal |
-| VKLAD | Cash deposit |
-| PREVOD NA UCET | Transfer to another account |
-| PREVOD Z UCTU | Transfer from another account |
-| VYBER KARTOU | Credit card withdrawal |
+   ```sql
+   CREATE TABLE account (
+       account_id   INTEGER PRIMARY KEY,
+       district_id  INTEGER,
+       frequency    VARCHAR(50),
+       date         VARCHAR(10)
+   );
 
-### Step 2: Fix the missing values in the district file
+   CREATE TABLE client (
+       client_id    INTEGER PRIMARY KEY,
+       birth_number VARCHAR(10),
+       district_id  INTEGER
+   );
 
-The `district.csv` file has question marks (`?`) in two columns, **A12** and **A15**, where values are missing. PostgreSQL cannot load a question mark into a numeric column and shows this error:
+   CREATE TABLE district (
+       A1 INTEGER PRIMARY KEY, A2 VARCHAR(100), A3 VARCHAR(100),
+       A4 INTEGER, A5 INTEGER, A6 INTEGER, A7 INTEGER, A8 INTEGER, A9 INTEGER,
+       A10 DECIMAL(5,1), A11 INTEGER, A12 DECIMAL(5,2), A13 DECIMAL(5,2),
+       A14 INTEGER, A15 INTEGER, A16 INTEGER
+   );
 
-```
-Can't parse numeric value [?] using formatter
-Invalid argument: Character ? is neither a decimal digit number,
-decimal point, nor "e" notation exponential mark.
-```
+   CREATE TABLE disp (
+       disp_id    INTEGER PRIMARY KEY,
+       client_id  INTEGER REFERENCES client(client_id),
+       account_id INTEGER REFERENCES account(account_id),
+       type       VARCHAR(20)
+   );
 
-**Step 2a: Find the missing values (Python, in Google Colab or locally)**
+   CREATE TABLE loan (
+       loan_id    INTEGER PRIMARY KEY,
+       account_id INTEGER REFERENCES account(account_id),
+       date       VARCHAR(10),
+       amount     DECIMAL(12,2),
+       duration   INTEGER,
+       payments   DECIMAL(12,2),
+       status     VARCHAR(2)
+   );
 
-```python
-import pandas as pd
+   CREATE TABLE "order" (
+       order_id   INTEGER PRIMARY KEY,
+       account_id INTEGER REFERENCES account(account_id),
+       bank_to    VARCHAR(10),
+       account_to VARCHAR(20),
+       amount     DECIMAL(12,2),
+       k_symbol   VARCHAR(20)
+   );
 
-# Read the file, treating ? as a missing value
-df = pd.read_csv('district.csv', sep=';', na_values=['?'])
+   CREATE TABLE trans (
+       trans_id   INTEGER PRIMARY KEY,
+       account_id INTEGER REFERENCES account(account_id),
+       date       VARCHAR(10),
+       type       VARCHAR(20),
+       operation  VARCHAR(50),
+       amount     DECIMAL(12,2),
+       balance    DECIMAL(12,2),
+       k_symbol   VARCHAR(20),
+       bank       VARCHAR(10),
+       account    VARCHAR(20)
+   );
 
-# Confirm which columns have missing values
-print("Missing values per column:")
-print(df.isnull().sum())
-# Output: A12 has 1 missing value, A15 has 1 missing value
+   CREATE TABLE card (
+       card_id  INTEGER PRIMARY KEY,
+       disp_id  INTEGER REFERENCES disp(disp_id),
+       type     VARCHAR(20),
+       issued   VARCHAR(30)
+   );
+   ```
 
-# Check the affected rows
-print(df[df.isnull().any(axis=1)])
-```
+   District columns: A1 = district ID, A2 = name, A3 = region, A4 = population, A11 = average salary, A12 and A13 = unemployment rate 1995 and 1996, A15 and A16 = crimes 1995 and 1996.
 
-**Why I chose to fill them with the column average:** The missing data is regional information, not transaction data, so it does not affect the transaction queries. Filling with the average is quick, keeps the overall pattern of the data, and avoids deleting a row.
+4. **Load the CSVs in this order**, because of the foreign keys: district, account, client, disp, loan, order, trans, card. In DBeaver: right-click the table > **Import Data** > CSV > set the delimiter to `;` > tick **Header row** > Finish. If a batch insert error appears, set the batch size to 1.
 
-**Step 2b: Fill the missing values and save a clean file**
+5. **Check the row counts:**
 
-```python
-# Fill missing values with the column average
-df['A12'] = df['A12'].fillna(df['A12'].mean())
-df['A15'] = df['A15'].fillna(df['A15'].mean())
+   ```sql
+   SELECT COUNT(*) FROM account;   -- 4,500
+   SELECT COUNT(*) FROM client;    -- 5,369
+   SELECT COUNT(*) FROM district;  -- 77
+   SELECT COUNT(*) FROM disp;      -- 5,369
+   SELECT COUNT(*) FROM loan;      -- 682
+   SELECT COUNT(*) FROM "order";   -- 6,471
+   SELECT COUNT(*) FROM trans;     -- 1,056,320
+   SELECT COUNT(*) FROM card;      -- 892
+   ```
 
-# Verify no missing values remain
-print("Missing values after cleaning:")
-print(df.isnull().sum())
-# All columns should now show 0
-
-# Save the cleaned file
-df.to_csv('district_clean.csv', sep=';', index=False)
-print("Clean file saved successfully")
-```
-
-Use `district_clean.csv` for all later imports. Do not import the original `district.csv` into PostgreSQL.
-
-### Step 3: Create the database tables
-
-Open DBeaver, connect to your PostgreSQL database, open a new SQL script, and run the following. This creates eight empty tables, one for each file.
-
-```sql
-CREATE TABLE account (
-    account_id   INTEGER PRIMARY KEY,
-    district_id  INTEGER,
-    frequency    VARCHAR(50),
-    date         VARCHAR(10)
-);
-
-CREATE TABLE client (
-    client_id    INTEGER PRIMARY KEY,
-    birth_number VARCHAR(10),
-    district_id  INTEGER
-);
-
-CREATE TABLE district (
-    A1   INTEGER PRIMARY KEY,
-    A2   VARCHAR(100),
-    A3   VARCHAR(100),
-    A4   INTEGER,
-    A5   INTEGER,
-    A6   INTEGER,
-    A7   INTEGER,
-    A8   INTEGER,
-    A9   INTEGER,
-    A10  DECIMAL(5,1),
-    A11  INTEGER,
-    A12  DECIMAL(5,2),
-    A13  DECIMAL(5,2),
-    A14  INTEGER,
-    A15  INTEGER,
-    A16  INTEGER
-);
-
-CREATE TABLE disp (
-    disp_id    INTEGER PRIMARY KEY,
-    client_id  INTEGER REFERENCES client(client_id),
-    account_id INTEGER REFERENCES account(account_id),
-    type       VARCHAR(20)
-);
-
-CREATE TABLE loan (
-    loan_id    INTEGER PRIMARY KEY,
-    account_id INTEGER REFERENCES account(account_id),
-    date       VARCHAR(10),
-    amount     DECIMAL(12,2),
-    duration   INTEGER,
-    payments   DECIMAL(12,2),
-    status     VARCHAR(2)
-);
-
-CREATE TABLE "order" (
-    order_id   INTEGER PRIMARY KEY,
-    account_id INTEGER REFERENCES account(account_id),
-    bank_to    VARCHAR(10),
-    account_to VARCHAR(20),
-    amount     DECIMAL(12,2),
-    k_symbol   VARCHAR(20)
-);
-
-CREATE TABLE trans (
-    trans_id   INTEGER PRIMARY KEY,
-    account_id INTEGER REFERENCES account(account_id),
-    date       VARCHAR(10),
-    type       VARCHAR(20),
-    operation  VARCHAR(50),
-    amount     DECIMAL(12,2),
-    balance    DECIMAL(12,2),
-    k_symbol   VARCHAR(20),
-    bank       VARCHAR(10),
-    account    VARCHAR(20)
-);
-
-CREATE TABLE card (
-    card_id  INTEGER PRIMARY KEY,
-    disp_id  INTEGER REFERENCES disp(disp_id),
-    type     VARCHAR(20),
-    issued   VARCHAR(30)
-);
-```
-
-> **A note on the district table:** The column names A1 to A16 match the file's headers exactly. After loading, A1 is the district ID. The main columns mean: A2 = district name, A3 = region, A4 = population, A11 = average salary, A12 = unemployment rate 1995, A13 = unemployment rate 1996, A15 = number of crimes 1995, A16 = number of crimes 1996.
-
-### Step 4: Load the CSV files into DBeaver
-
-Load the tables in this exact order. Some tables refer to others, so the tables they refer to must be loaded first.
-
-1. district (use `district_clean.csv`)
-2. account
-3. client
-4. disp
-5. loan
-6. order
-7. trans
-8. card
-
-**How to load each file in DBeaver**
-
-1. Right-click the table name in the left panel.
-2. Select **Import Data**.
-3. Choose **CSV** as the source.
-4. Browse to the CSV file.
-5. Set the **delimiter** to a semicolon `;`.
-6. Make sure **Header row** is ticked.
-7. Click Next through the column mapping screen, then Finish.
-
-**If you get a batch insert error:** Open the import settings and turn off batch insert (set the batch size to 1). PostgreSQL will then load one row at a time and skip any problem rows instead of stopping completely.
-
-### Step 5: Check that the loading worked
-
-Run this in DBeaver to confirm each table has the right number of rows:
-
-```sql
-SELECT COUNT(*) FROM account;   -- Expected: 4,500
-SELECT COUNT(*) FROM client;    -- Expected: 5,369
-SELECT COUNT(*) FROM district;  -- Expected: 77
-SELECT COUNT(*) FROM disp;      -- Expected: 5,369
-SELECT COUNT(*) FROM loan;      -- Expected: 682
-SELECT COUNT(*) FROM "order";   -- Expected: 6,471
-SELECT COUNT(*) FROM trans;     -- Expected: 1,056,320
-SELECT COUNT(*) FROM card;      -- Expected: 892
-```
-
-Once the counts match, open `Querying_the_Berka_Bank_Data.sql` and run the three queries.
+   Then run the queries in `Querying_the_Berka_Bank_Data.sql`.
+</details>
 
 ---
 
